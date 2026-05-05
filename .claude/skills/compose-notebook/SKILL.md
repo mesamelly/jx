@@ -1,6 +1,6 @@
 ---
 name: compose-notebook
-description: Compose a new marimo notebook in the jx repo by reusing @app.function helpers from the existing catalog (notebooks/nb01_retrieve_profiles.py through nb06_query_genes.py) to answer a JUMP Cell Painting biological question end-to-end — e.g. "find perturbations morphologically similar to X and show their images", "annotate these hits with gene/target info", "pull activity mAP for these perturbations". Trigger whenever the user asks for a notebook, analysis, figure, or vignette that touches JUMP profiles, cosine similarity, perturbation metadata, Cell Painting images, or morphological activity — even if they don't explicitly say "marimo" or "reuse the catalog". Use this instead of writing standalone query code from scratch, and instead of duplicating functions that already exist in the catalog. Also trigger when the user says "write me a notebook that…" inside jx, or asks to build on top of notebooks 01–06 / nb01–nb06.
+description: Compose a new marimo notebook in the jx repo by reusing @app.function helpers from the existing catalog (notebooks/nb01_retrieve_profiles.py through nb10_batch_reproducibility.py) to answer a JUMP Cell Painting biological question end-to-end — e.g. "find perturbations morphologically similar to X and show their images", "annotate these hits with gene/target info", "pull activity mAP for these perturbations", "how reproducible is this compound across sources or batches?". Trigger whenever the user asks for a notebook, analysis, figure, or vignette that touches JUMP profiles, cosine similarity, perturbation metadata, Cell Painting images, morphological activity, or reproducibility — even if they don't explicitly say "marimo" or "reuse the catalog". Use this instead of writing standalone query code from scratch, and instead of duplicating functions that already exist in the catalog. Also trigger when the user says "write me a notebook that…" inside jx, or asks to build on top of notebooks 01–10 / nb01–nb10.
 ---
 
 # Compose a new marimo notebook from the jx catalog
@@ -10,15 +10,16 @@ description: Compose a new marimo notebook in the jx repo by reusing @app.functi
 If the question is answerable as a single SQL query plus a chart against the canonical JUMP metadata DuckDB (plate/well/perturbation/compound demographics, source breakdowns, joins across the metadata schema), reach for the parallel SQL catalog at `queries/q*.gsql` and the [`compose-query`](../compose-query/SKILL.md) skill — it's a much lighter surface than spinning up a marimo notebook. Use this skill when the question genuinely needs Python glue: image fetching, AnnData profiles, broad-babel ID translation, copairs computation, similarity matrices, NCBI lookups.
 
 The jx repo holds a catalog of marimo notebooks (`notebooks/nb01_*.py` through
-`notebooks/nb06_*.py`) whose top-level `@app.function` helpers do all the
+`notebooks/nb10_*.py`) whose top-level `@app.function` helpers do all the
 expensive plumbing for JUMP Cell Painting: loading profiles, attaching
 metadata, computing activity, fetching 5-channel images from S3, querying
-similarity matrices, and looking up gene annotations. When a user wants to
-answer a biological question — "find things that look like compound X",
-"show me images of these knockouts side-by-side", "what's the activity of
-these genes" — the right move is almost always to **compose an existing
-notebook from these helpers**, not to write a new query pipeline from
-scratch. This skill tells you how.
+similarity matrices, looking up gene annotations, and measuring cross-source
+and within-source reproducibility. When a user wants to answer a biological
+question — "find things that look like compound X", "show me images of these
+knockouts side-by-side", "what's the activity of these genes", "how
+reproducible is this compound?" — the right move is almost always to **compose
+an existing notebook from these helpers**, not to write a new query pipeline
+from scratch. This skill tells you how.
 
 ## The catalog at a glance
 
@@ -34,6 +35,10 @@ helpers. The functions are the contract; the UI cells are illustrative.
 | `nb04_display_images` | `lookup_site_metadata(query, input_column)`, `pick_first_site(location_info)`, `display_site(source, batch, plate, well, site, label)` | Pull well metadata via `jump_portrait.fetch.get_item_location_metadata`, pick a single imaging site, render a 5-channel image grid (matplotlib). `input_column` is `"standard_key"`, `"InChIKey"`, or `"JCP2022"`. |
 | `nb05_explore_similarity` | `latest_zenodo_id()`, `load_distance_matrix(dataset)`, `sample_submatrix`, `plot_similarity_heatmap` | Lazy-scan the full all-vs-all cosine matrix from Zenodo. **Gotcha:** despite the filename `*_cosinesim_full.parquet` and the "0 = identical, 2 = anticorrelated" wording in that notebook's docstring, the actual values are cosine **similarities** in `[-1, 1]` (self-similarity ≈ 1), not distances. Sort descending. |
 | `nb06_query_genes` | `gene_symbols_to_ncbi`, `entrez_gene_info`, `parse_gene_list` | NCBI Entrez lookups for gene symbols. Use when annotating CRISPR/ORF hits with gene descriptions. |
+| `nb07_compound_neighborhood` | *(vignette — no reusable functions)* | Demo composition: given a compound, find morphological neighbors, annotate with targets, display images side by side. Read as a worked example of how nb01–nb06 compose. |
+| `nb08_myc_pathway` | `symbols_to_jcp(symbols)`, `load_sim_cached(dataset)`, `gene_submatrix(distances, jcp_ids)`, `plot_gene_heatmap(submatrix, label_map)` | MYC pathway gene explorer. `symbols_to_jcp` maps gene symbols → JCP2022 IDs via broad-babel `standard_key` lookup. **Gotcha:** returns one ID per symbol non-deterministically when a gene has both CRISPR (`JCP2022_8…`) and ORF (`JCP2022_9…`) entries — validate modality before querying a similarity matrix. `load_sim_cached` wraps `nb05.load_distance_matrix` with a local cache at `~/.cache/jx/`. |
+| `nb09_reproducibility` | `fetch_wells(jcp_id)`, `pairwise_cosine_labeled(wells)`, `source_pair_summary(pairs)` | Cross-source reproducibility for compounds. `fetch_wells` loads and caches the full compound profiles parquet to `~/.cache/jx/compound_profiles.parquet` on first call. **Note:** CRISPR and ORF perturbations are each measured in only one source in JUMP — this analysis only applies to compounds. |
+| `nb10_batch_reproducibility` | `pairwise_cosine_by_plate(wells)`, `plate_pair_summary(pairs)` | Within-source batch reproducibility. Uses `Metadata_Plate` as a batch proxy (no `Metadata_Batch` column exists). Imports `fetch_wells` from nb09. |
 
 When the biological question isn't obviously one of the above, read the
 catalog file itself (not just this table) before inventing new code. The
@@ -348,14 +353,44 @@ These have bitten real composition work. Know them before you debug.
   socket.socket(); s.bind(('127.0.0.1', 0)); print(s.getsockname()[1])"`)
   or pick something in the 27xx–28xx range after checking `ss -ltn`.
 
+## Function index — catalog.json
+
+`notebooks/catalog.json` is a machine-readable index of every
+`@app.function` in the catalog, generated by `scripts/build_catalog.py`.
+Read it before composing to find existing functions rather than scanning
+the prose table above.
+
+```python
+import json
+from pathlib import Path
+cat = json.loads((Path(__file__).parent / "catalog.json").read_text())
+# cat["functions"]    — flat list of all functions with module, signature, docstring
+# cat["by_module"]    — same data grouped by notebook
+# cat["aliases"]      — semantically equivalent functions with different names;
+#                       always import the preferred form
+```
+
+Key fields per function entry:
+- `name`, `module`, `signature`, `docstring` — always present
+- `canonical: true` — present when this is the authoritative copy of a function
+  defined in multiple notebooks; import from here, not the duplicates
+- `also_defined_in: [...]` — lists other notebooks that re-define the same function
+- `prefer_instead: "name"` — this function is a semantic alias; use the named
+  function from `canonical_sources` instead
+
+To regenerate after adding a notebook: `python3 scripts/build_catalog.py`
+
 ## Process for a new composition
 
 When the user gives you a question like "compound X → similar things →
 images side by side", work through this:
 
-1. **Turn the English into catalog calls.** Which nbN functions give
-   you each step? If you need something not in the table above, read
-   the catalog file for details before deciding it's missing.
+1. **Look up functions in `catalog.json` before writing any new code.**
+   Load the JSON and search by name or docstring keyword. If a function
+   already exists, import it — don't redefine it. Check `prefer_instead`
+   to avoid importing a semantic alias when a canonical version exists.
+   If you need something not in the catalog, read the catalog notebook
+   source directly before deciding it's missing.
 2. **Validate IDs against the data first.** Before writing the whole
    notebook, run a quick kernel check: does the query JCP exist in the
    similarity matrix? Does `broad_babel` know about it? Otherwise you
@@ -374,6 +409,28 @@ images side by side", work through this:
    place.** Don't edit the `.py` file while the kernel has it open.
 7. **After the first successful run, look for anything expensive
    you're about to repeat on every edit** and cache it.
+8. **Offer to add it to the catalog.** Once the notebook is validated
+   and saved, ask the user:
+
+   > "This notebook answers a reusable question. Would you like me to
+   > add it to the catalog and update SKILL.md?"
+
+   If they say yes:
+   - Run `python3 scripts/build_catalog.py` to regenerate `notebooks/catalog.json`.
+   - Check the script output for any new duplicates or aliases it flags, and
+     add them to `CANONICAL` / `ALIASES` in the script if warranted.
+   - Add a row to the catalog table in this file with the new module
+     name, its `@app.function` reusable functions, a one-line description,
+     and any **Gotchas** worth calling out.
+   - Update the frontmatter `description` field to extend the notebook
+     range (e.g., `nb01–nb10` → `nb01–nb11`).
+   - Update the "What this skill is for" paragraph if the new notebook
+     covers a new class of question not previously mentioned.
+   - Commit the new notebook, updated `catalog.json`, and updated `SKILL.md`
+     together in one commit.
+
+   If they say no, leave SKILL.md unchanged — the notebook still works,
+   it just won't be discovered automatically on the next composition.
 
 ## General marimo patterns
 
